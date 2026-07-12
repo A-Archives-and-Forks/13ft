@@ -628,6 +628,20 @@ def process_html_document(html_content, original_url):
 
     domain = parsed_url.netloc.lower()
 
+    # --- GENERAL FIXES ---
+
+    # Strip anti-hotlinking, anti-embedding, and frame-busting scripts.
+    for script in soup.find_all("script", src=False):
+        content = script.get_text(default="")
+        
+        # Target the specific hostname check
+        if "location.hostname" in content and ("location.href" in content or "location.replace" in content):
+            script.decompose()
+            
+        # Optional: Catch common frame-busting scripts if you are viewing this via an iframe
+        elif "top.location" in content or "window.top" in content:
+            script.decompose()
+
     # --- SITE SPECIFIC FIXES ---
 
     # The Seattle Times
@@ -644,6 +658,7 @@ def process_html_document(html_content, original_url):
             soup.body["style"] = f"{current_style}; overflow: auto !important; position: static !important;"
 
     return str(soup)
+
 
 
 CHALLENGE_SIGNATURES = [
@@ -802,6 +817,12 @@ def bypass_paywall(url, strings, job_id=None):
         html_text = response.text
         final_url = response.url
 
+        # Treat error status codes as a challenge so the archive fallbacks trigger.
+        # Sites like News24 return 403 with their homepage HTML (which contains a
+        # JS redirect back to the homepage), causing the browser to redirect away.
+        if response.status_code in (401, 403, 407, 429) or response.status_code >= 500:
+            html_text = ""
+
     set_step(job_id, 'detect')
     if not html_text or is_challenge_page(html_text):
         recovered = False
@@ -849,10 +870,14 @@ def clean_page_cache():
 def fetch_worker(job_id, url, strings):
     try:
         result = bypass_paywall(url, strings, job_id)
-        cache_key = normalize_cache_url(url)
-        with page_cache_lock:
-            clean_page_cache()
-            page_cache[cache_key] = {'html': result, 'timestamp': time.time()}
+        # Never cache challenge/error pages — only store clean article HTML.
+        if not is_challenge_page(result):
+            cache_key = normalize_cache_url(url)
+            with page_cache_lock:
+                clean_page_cache()
+                page_cache[cache_key] = {'html': result, 'timestamp': time.time()}
+        else:
+            cache_key = normalize_cache_url(url)
         with jobs_lock:
             jobs[job_id]['result'] = cache_key
             jobs[job_id]['step'] = 'done'
