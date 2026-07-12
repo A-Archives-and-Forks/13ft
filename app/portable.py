@@ -105,6 +105,7 @@ html = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>13ft Ladder</title>
+    <link rel="icon" href="/favicon.ico" type="image/png">
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&display=swap" rel="stylesheet" async>
     <style>
         * { box-sizing: border-box; }
@@ -657,6 +658,20 @@ def process_html_document(html_content, original_url):
             current_style = soup.body.get("style", "")
             soup.body["style"] = f"{current_style}; overflow: auto !important; position: static !important;"
 
+    # --- FAVICON OVERRIDE ---
+    # Remove any existing favicon links from the source page and inject the
+    # 13ft favicon so the browser tab always shows the 13ft logo.
+    for link_tag in soup.find_all("link", rel=lambda r: r and any(
+            v.lower() in ("icon", "shortcut icon", "apple-touch-icon",
+                          "apple-touch-icon-precomposed", "mask-icon")
+            for v in (r if isinstance(r, list) else [r])
+    )):
+        link_tag.decompose()
+
+    favicon_tag = soup.new_tag("link", rel="icon", href="/favicon.ico", type="image/png")
+    if soup.head:
+        soup.head.append(favicon_tag)
+
     return str(soup)
 
 
@@ -901,6 +916,17 @@ def fetch_worker(job_id, url, strings):
         with jobs_lock:
             jobs[job_id]['error'] = strings["unexpected_error"]
             jobs[job_id]['step'] = 'error'
+
+
+@app.route("/favicon.ico")
+def favicon():
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logo.png")
+    if os.path.exists(logo_path):
+        with open(logo_path, "rb") as f:
+            data = f.read()
+        return Response(data, mimetype="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+    return "", 404
 
 
 @app.route("/")
