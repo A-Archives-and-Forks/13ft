@@ -618,7 +618,11 @@ def process_html_document(html_content, original_url):
         base_url = urljoin(base_url, parsed_url.path.rsplit("/", 1)[0] + "/")
 
     base_tag = soup.find("base")
-    if not base_tag:
+    if base_tag:
+        # Always overwrite — sites may have <base href="/"> which would resolve
+        # root-relative asset paths to the 13ft server instead of the original domain.
+        base_tag["href"] = base_url
+    else:
         new_base_tag = soup.new_tag("base", href=base_url)
         if soup.head:
             soup.head.insert(0, new_base_tag)
