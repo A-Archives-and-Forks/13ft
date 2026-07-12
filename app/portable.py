@@ -86,6 +86,10 @@ googlebot_headers = {
 jobs = {}
 jobs_lock = threading.Lock()
 
+page_cache = {}
+page_cache_lock = threading.Lock()
+PAGE_CACHE_TTL = 300
+
 
 class UserFacingError(Exception):
     def __init__(self, user_message):
@@ -530,19 +534,15 @@ html = """
                     const pct = Math.min(((idx + 1) / STEPS.length) * 100, 95);
                     progressEl.style.width = pct + '%';
                 }
-            });
-
-            evtSource.addEventListener('done', function(e) {
-                evtSource.close();
-                clearInterval(timer);
-                renderSteps(STEPS.length);
-                progressEl.style.width = '100%';
-                const data = JSON.parse(e.data);
-                setTimeout(() => {
-                    document.open();
-                    document.write(data.html);
-                    document.close();
-                }, 400);
+                if (data.redirect) {
+                    evtSource.close();
+                    clearInterval(timer);
+                    renderSteps(STEPS.length);
+                    progressEl.style.width = '100%';
+                    setTimeout(() => {
+                        window.location.href = data.redirect;
+                    }, 400);
+                }
             });
 
             evtSource.addEventListener('error_msg', function(e) {
@@ -557,6 +557,14 @@ html = """
                 clearInterval(timer);
                 showError(UI_STRINGS.connection_lost_error);
             };
+        });
+
+        window.addEventListener('pageshow', function(event) {
+            if (event.persisted) {
+                document.getElementById('form-view').style.display = '';
+                document.getElementById('status-view').style.display = 'none';
+                document.getElementById('link').value = '';
+            }
         });
     </script>
 </body>
@@ -825,11 +833,28 @@ def bypass_paywall(url, strings, job_id=None):
     return result
 
 
+def normalize_cache_url(url):
+    if "://" in url:
+        return "https://" + url.split("://", 1)[1]
+    return "https://" + url
+
+
+def clean_page_cache():
+    now = time.time()
+    expired = [k for k, v in page_cache.items() if now - v['timestamp'] > PAGE_CACHE_TTL]
+    for k in expired:
+        del page_cache[k]
+
+
 def fetch_worker(job_id, url, strings):
     try:
         result = bypass_paywall(url, strings, job_id)
+        cache_key = normalize_cache_url(url)
+        with page_cache_lock:
+            clean_page_cache()
+            page_cache[cache_key] = {'html': result, 'timestamp': time.time()}
         with jobs_lock:
-            jobs[job_id]['result'] = result
+            jobs[job_id]['result'] = cache_key
             jobs[job_id]['step'] = 'done'
     except requests.exceptions.Timeout:
         with jobs_lock:
@@ -888,8 +913,7 @@ def status_stream():
                 if current != last_step:
                     last_step = current
                     if current == 'done':
-                        yield f"event: step\ndata: {json.dumps({'step': 'done'})}\n\n"
-                        yield f"event: done\ndata: {json.dumps({'html': job['result']})}\n\n"
+                        yield f"event: step\ndata: {json.dumps({'step': 'done', 'redirect': '/' + job['result']})}\n\n"
                         break
                     elif current == 'error':
                         yield f"event: error_msg\ndata: {json.dumps({'message': job['error']})}\n\n"
@@ -932,6 +956,12 @@ def get_article(path):
     parts = full_url.split("/", 4)
     if len(parts) >= 5:
         actual_url = "https://" + parts[4].lstrip("/")
+
+        with page_cache_lock:
+            cached = page_cache.get(actual_url)
+        if cached:
+            return cached['html']
+
         try:
             return bypass_paywall(actual_url, strings)
         except requests.exceptions.Timeout:
